@@ -3,6 +3,10 @@ import time
 import RPi.GPIO as GPIO
 
 
+def reset_esc(p):
+    p.ChangeDutyCycle(7.5)
+
+
 GPIO.setmode(GPIO.BCM)
 
 # Speed control
@@ -17,10 +21,50 @@ speed.start(speed_dc)
 steeringPin = 19
 steering_pwm_hz = 50
 steering_dc = 7.5
+steering_right_dc = 6
+steering_left_dc = 9
 GPIO.setup(steeringPin, GPIO.OUT)
 steering = GPIO.PWM(steeringPin, steering_pwm_hz)
 steering.start(steering_dc)
 
+# ESC calibration
+print('Calibrating ESC...')
+
+speed_dc = 10
+speed.ChangeDutyCycle(speed_dc)
+time.sleep(2)
+
+speed_dc = 5
+speed.ChangeDutyCycle(speed_dc)
+time.sleep(2)
+
+reset_esc(speed)
+
+print('ESC calibration complete')
+
+print('Running ESC demo...')
+print('Spinning foward')
+speed_dc = 8
+speed.ChangeDutyCycle(speed_dc)
+time.sleep(5)
+
+print('Stopping')
+reset_esc(speed)
+time.sleep(2)
+
+print('Running servo demo...')
+print('Turning right')
+steering.ChangeDutyCycle(steering_right_dc)
+time.sleep(5)
+
+print('Turning left')
+steering.ChangeDutyCycle(steering_left_dc)
+time.sleep(5)
+
+print('Resetting')
+steering.ChangeDutyCycle(steering_dc)
+
+print('Running...')
 try:
     while True:
         time.sleep(10)
