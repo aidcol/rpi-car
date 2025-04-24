@@ -1,3 +1,13 @@
+"""
+This file has code taken from and influenced by the following sources:
+User raja_961, “Autonomous Lane-Keeping Car Using Raspberry
+Pi and OpenCV”. Instructables. URL:
+https://www.instructables.com/Autonomous-Lane-Keeping-Car-U
+sing-Raspberry-Pi-and/
+
+"""
+
+
 import time
 
 import RPi.GPIO as GPIO
