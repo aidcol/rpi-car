@@ -38,3 +38,8 @@ while True:
 
 video.release()
 cv2.destroyAllWindows()
+
+def convert_to_HSV(frame):
+  hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+  cv2.imshow("HSV",hsv)
+  return hsv
