@@ -1,0 +1,15 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+    fragment@0 {
+        target-path  = "/";
+        __overlay__ {
+            slay_device { //new name
+                compatible = "fun_overlay";
+                led-gpios = <&gpio 5 0>;  // GPIO 5
+                button-gpios = <&gpio 6 0>;  // GPIO 6 
+            };
+        };
+    };
+};
