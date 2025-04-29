@@ -12,11 +12,31 @@ https://www.hackster.io/big-brains/big-brains-elec-424-final-project-team-11-53c
 """
 import time
 import math
-import RPi.GPIO as GPIO
 
+import RPi.GPIO as GPIO
 import numpy as np
 import cv2
 
+
+GPIO.setmode(GPIO.BCM)
+
+# ESC parameters
+speedPin = 18
+speed_pwm_hz = 50
+speed_dc = 7.5
+GPIO.setup(speedPin, GPIO.OUT)
+speed = GPIO.PWM(speedPin, speed_pwm_hz)
+speed.start(speed_dc)
+
+# Steering parameters
+steeringPin = 19
+steering_pwm_hz = 50
+steering_dc = 7.5
+steering_right_dc = 6
+steering_left_dc = 9
+GPIO.setup(steeringPin, GPIO.OUT)
+steering = GPIO.PWM(steeringPin, steering_pwm_hz)
+steering.start(steering_dc)
 
 # Video parameters
 ESC_KEY_CODE = 27
@@ -24,12 +44,51 @@ VIDEO_DEVICE_IDX = 0
 VIDEO_WIDTH = 160
 VIDEO_HEIGHT = 120
 
+# Optical encoder parameters
+TIMESTAMP_PATH = "/sys/devices/platform/slay_device/speed"
+prev_timestamp = -1
 
-def convert_to_HSV(frame):
-  hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-  cv2.imshow("HSV",hsv)
-  return hsv
+# Steering control ############################################################
+def set_steering(p, steering):
+    p.ChangeDutyCycle(steering)
 
+
+def reset_steering(p):
+    p.ChangeDutyCycle(7.5)
+
+
+def calibrate_steering(p):
+    print('Calibrating steering...')
+    p.ChangeDutyCycle(6)
+    time.sleep(2)
+    p.ChangeDutyCycle(9)
+    time.sleep(2)
+    reset_steering(p)
+    print('Steering calibration complete')
+
+###############################################################################
+
+# ESC speed control ###########################################################
+def set_esc(p, speed):
+    p.ChangeDutyCycle(speed)
+
+
+def reset_esc(p):
+    p.ChangeDutyCycle(7.5)
+
+
+def calibrate_esc(p):
+    print('Calibrating ESC...')
+    p.ChangeDutyCycle(10)
+    time.sleep(2)
+    p.ChangeDutyCycle(5)
+    time.sleep(2)
+    reset_esc(p)
+    print('ESC calibration complete')
+
+###############################################################################
+
+# Image processing functions ##################################################
 def detect_edges(frame):
     # blue color detection
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -181,10 +240,15 @@ def display_heading_line(frame, steering_angle, line_color=(0, 0, 255), line_wid
 
     return heading_image
 
+###############################################################################
+
+# Set up GPIO
+calibrate_esc(speed)
+calibrate_steering(steering)
 
 # Set up video stream
 print("Initializing video stream...")
-video = cv2.VideoCapture(0)
+video = cv2.VideoCapture(VIDEO_DEVICE_IDX)
 video.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT)
 print("Video stream initialized.")
@@ -192,24 +256,35 @@ time.sleep(1)
 
 # The loop
 while True:
-  ret, frame = video.read()
-  frame = cv2.flip(frame, -1)
-  cv2.imshow("original", frame)
+    ret, frame = video.read()
+    cv2.imshow("original", frame)
 
-  # Calling the functions
-  hsv = convert_to_HSV(frame)
-  edges = detect_edges(hsv)
-  roi = region_of_interest(edges)
-  line_segments = detect_line_segments(roi)
-  lane_lines = average_slope_intercept(frame,line_segments)
-  lane_lines_image = display_lines(frame,lane_lines)
-  steering_angle = get_steering_angle(frame, lane_lines)
-  heading_image = display_heading_line(lane_lines_image,steering_angle)
+    # Calling the functions
+    edges = detect_edges(frame)
+    roi = region_of_interest(edges)
+    line_segments = detect_line_segments(roi)
+    lane_lines = average_slope_intercept(frame,line_segments)
 
-  key = cv2.waitKey(1)
-  if key == ESC_KEY_CODE:
-    break
+    lane_lines_image = display_lines(frame,lane_lines)
+    cv2.imshow("lane_lines",lane_lines_image)
+
+    steering_angle = get_steering_angle(frame, lane_lines)
+    heading_image = display_heading_line(lane_lines_image,steering_angle)
+
+    # Read the timestamp from the optical encoder and calculate the time difference
+    time_diff_ns = 0
+    with open(TIMESTAMP_PATH, "r") as f:
+      curr_timestamp = int(f.read())
+      if prev_timestamp == -1:
+        prev_timestamp = curr_timestamp
+      else:
+        time_diff_ns = curr_timestamp - prev_timestamp
+        prev_timestamp = curr_timestamp
+        # print("time_diff: ", time_diff_ns)
+
+    key = cv2.waitKey(1)
+    if key == ESC_KEY_CODE:
+      break
 
 video.release()
 cv2.destroyAllWindows()
-

@@ -1,15 +1,3 @@
-"""
-This file makes use of code from the following sources:
-
-User raja_961, “Autonomous Lane-Keeping Car Using Raspberry
-Pi and OpenCV”. Instructables. URL:
-https://www.instructables.com/Autonomous-Lane-Keeping-Car-U
-sing-Raspberry-Pi-and/
-
-Big Brains - ELEC 424 Final Project - Team 11. URL:
-https://www.hackster.io/big-brains/big-brains-elec-424-final-project-team-11-53c862
-
-"""
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -20,6 +8,7 @@ https://www.hackster.io/big-brains/big-brains-elec-424-final-project-team-11-53c
 #include <linux/ktime.h>
 #include <linux/fs.h>
 #include <linux/device.h>
+#include <linux/mod_devicetable.h>
 
 
 static struct gpio_desc *button_gpio;
@@ -91,7 +80,7 @@ static int encoder_probe(struct platform_device *pdev)
 }
 
 // Remove function
-static int encoder_remove(struct platform_device *pdev)
+static void encoder_remove(struct platform_device *pdev)
 {
     struct device *dev = &pdev->dev;
 
@@ -99,7 +88,6 @@ static int encoder_remove(struct platform_device *pdev)
     free_irq(irq_number, NULL);
 
     dev_info(dev, "gpiod_driver: Driver removed\n");
-    return 0;
 }
 
 // Device tree match table
@@ -124,5 +112,5 @@ module_platform_driver(encoder_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ELEC 424 Team 15");
-MODULE_DESCRIPTION("Optical Encoder Driver for RC Car");
+MODULE_DESCRIPTION("Driver for RC Car");
 
