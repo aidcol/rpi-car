@@ -9,12 +9,15 @@
 #include <linux/fs.h>
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
+#include <linux/moduleparam.h>
 
 
 static struct gpio_desc *button_gpio;
 static unsigned int irq_number;
 static ktime_t last_time;
 static volatile s64 last_period_ns;  //nanoseconds
+static int elapsed_ms = 0;
+module_param(elapsed_ms, int, 0644);
 
 // sysfs attribute to show last measured period
 static ssize_t speed_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -30,6 +33,7 @@ static irqreturn_t button_irq_handler(int irq, void *dev_id)
 {
     ktime_t now = ktime_get();
     last_period_ns = ktime_to_ns(ktime_sub(now, last_time));
+    elapsed_ms = (int)(last_period_ns / 1000000);
     last_time = now;
     pr_info("gpiod_driver: Detected encoder pulse, period = %lld ns\n", last_period_ns);
     return IRQ_HANDLED;

@@ -17,6 +17,8 @@ import RPi.GPIO as GPIO
 import numpy as np
 import cv2
 
+import matplotlib.pyplot as plt  # pip install matplotlib
+
 
 GPIO.setmode(GPIO.BCM)
 
@@ -27,13 +29,15 @@ speed_dc = 7.5
 GPIO.setup(speedPin, GPIO.OUT)
 speed = GPIO.PWM(speedPin, speed_pwm_hz)
 speed.start(speed_dc)
+MAX_SPEED = 7.9
+MIN_SPEED = 7.5
 
 # Steering parameters
 steeringPin = 19
 steering_pwm_hz = 50
 steering_dc = 7.5
-steering_right_dc = 6
-steering_left_dc = 9
+steering_right_dc = 9.5
+steering_left_dc = 5.5
 GPIO.setup(steeringPin, GPIO.OUT)
 steering = GPIO.PWM(steeringPin, steering_pwm_hz)
 steering.start(steering_dc)
@@ -48,6 +52,22 @@ VIDEO_HEIGHT = 120
 TIMESTAMP_PATH = "/sys/devices/platform/slay_device/speed"
 prev_timestamp = -1
 
+# PD variables
+kp = 0.01
+# kd = kp * 0.1
+kd = 0
+lastTime = 0
+lastError = 0
+
+
+# arrays for making the final graphs
+p_vals = []
+d_vals = []
+err_vals = []
+speed_pwm = []
+steer_pwm = []
+
+
 # Steering control ############################################################
 def set_steering(p, steering):
     p.ChangeDutyCycle(steering)
@@ -57,19 +77,18 @@ def reset_steering(p):
     p.ChangeDutyCycle(7.5)
 
 
-def calibrate_steering(p):
-    print('Calibrating steering...')
-    p.ChangeDutyCycle(6)
-    time.sleep(2)
-    p.ChangeDutyCycle(9)
-    time.sleep(2)
-    reset_steering(p)
-    print('Steering calibration complete')
+def map_value(value, in_min, in_max, out_min, out_max):
+    # Clamp input to avoid out-of-bound servo values
+    value = max(min(value, in_max), in_min)
+    return out_min + (float(value - in_min) / (in_max - in_min)) * (out_max - out_min)
 
 ###############################################################################
 
 # ESC speed control ###########################################################
 def set_esc(p, speed):
+    global speed_dc
+    speed_dc = speed
+
     p.ChangeDutyCycle(speed)
 
 
@@ -86,21 +105,65 @@ def calibrate_esc(p):
     reset_esc(p)
     print('ESC calibration complete')
 
+
+def accelerate():
+    """
+    Adjusts the speed parameters to increase velocity, if not at peak capacity.
+
+    Returns:
+        None: Provides update on velocity adjustments.
+    """
+    global speed_dc
+    global MAX_SPEED
+    
+    if speed_dc < MAX_SPEED:
+        speed_dc = min(speed_dc + 0.05, MAX_SPEED)  # Enhance speed
+        set_esc(speed, speed_dc)
+        print(f"Velocity increment: Now at {speed_dc}")
+    else:
+        print("Peak velocity achieved.")
+
+
+def decelerate():
+    """
+    Modulates the speed parameters to reduce velocity, unless fully stopped.
+
+    Returns:
+        None: Delivers update on velocity reduction.
+    """
+    global speed_dc
+    global MIN_SPEED
+
+    if speed_dc > MIN_SPEED:
+        speed_dc = max(speed_dc - 0.05, MIN_SPEED)  # Reduce speed
+        set_esc(speed, speed_dc)
+        print(f"Velocity decrement: Now at {speed_dc}")
+    else:
+        print("Complete standstill reached.")
+
 ###############################################################################
 
 # Image processing functions ##################################################
 def detect_edges(frame):
     # blue color detection
+    blurred = cv2.GaussianBlur(frame, (5,5), 0)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # cv2.imshow("HSV",hsv)
-    lower_blue = np.array([90, 120, 0], dtype = "uint8") # lower limit of blue color
-    upper_blue = np.array([150, 255, 255], dtype="uint8") # upper limit of blue color
+    lower_blue = np.array([100,120,50], dtype="uint8")
+    upper_blue = np.array([140,255,255], dtype="uint8")
     mask = cv2.inRange(hsv,lower_blue,upper_blue) # this mask will filter out everything but blue
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=1)
+
+    cv2.imshow("mask",mask)
 
     # detect edges
     edges = cv2.Canny(mask, 50, 100) 
     # cv2.imshow("edges",edges)
     return edges
+
 
 def region_of_interest(edges):
     height, width = edges.shape # extract the height and width of the edges frame
@@ -120,6 +183,7 @@ def region_of_interest(edges):
     cv2.imshow("roi",cropped_edges)
     return cropped_edges
 
+
 def detect_line_segments(cropped_edges):
     rho = 1  
     theta = np.pi / 180  
@@ -128,11 +192,12 @@ def detect_line_segments(cropped_edges):
                                     np.array([]), minLineLength=5, maxLineGap=0)
     return line_segments
 
+
 def average_slope_intercept(frame, line_segments):
     lane_lines = []
 
     if line_segments is None:
-        print("no line segment detected")
+        # print("no line segment detected")
         return lane_lines
 
     height, width,_ = frame.shape
@@ -146,7 +211,7 @@ def average_slope_intercept(frame, line_segments):
     for line_segment in line_segments:
         for x1, y1, x2, y2 in line_segment:
             if x1 == x2:
-                print("skipping vertical lines (slope = infinity)")
+                # print("skipping vertical lines (slope = infinity)")
                 continue
 
             fit = np.polyfit((x1, x2), (y1, y2), 1)
@@ -174,6 +239,7 @@ def average_slope_intercept(frame, line_segments):
     # all coordinate points are in pixels
     return lane_lines
 
+
 def make_points(frame, line):
     height, width, _ = frame.shape
     slope, intercept = line
@@ -188,6 +254,7 @@ def make_points(frame, line):
 
     return [[x1, y1, x2, y2]]
 
+
 def display_lines(frame, lines, line_color=(0, 255, 0), line_width=6): # line color (B,G,R)
     line_image = np.zeros_like(frame)
 
@@ -198,6 +265,7 @@ def display_lines(frame, lines, line_color=(0, 255, 0), line_width=6): # line co
 
     line_image = cv2.addWeighted(frame, 0.8, line_image, 1, 1)  
     return line_image
+
 
 def get_steering_angle(frame, lane_lines):
      height, width, _ = frame.shape
@@ -224,6 +292,7 @@ def get_steering_angle(frame, lane_lines):
 
      return steering_angle
 
+
 def display_heading_line(frame, steering_angle, line_color=(0, 0, 255), line_width=5):
     heading_image = np.zeros_like(frame)
     height, width, _ = frame.shape
@@ -242,9 +311,56 @@ def display_heading_line(frame, steering_angle, line_color=(0, 0, 255), line_wid
 
 ###############################################################################
 
+# Plotting functions ##########################################################
+def plot_pd(p_vals, d_vals, error, show_img=False):
+    # Plot the PD
+    fig, ax1 = plt.subplots()
+    t_ax = np.arange(len(p_vals))
+    ax1.plot(t_ax, p_vals, '-', label="P values")
+    ax1.plot(t_ax, d_vals, '-', label="D values")
+    ax2 = ax1.twinx()
+    ax2.plot(t_ax, error, '--r', label="Error")
+    
+    ax1.set_xlabel("Frames")
+    ax1.set_ylabel("PD Value")
+    ax2.set_ylim(-90, 90)
+    ax2.set_ylabel("Error Value")
+    
+    plt.title("PD Values over time")
+    fig.legend()
+    fig.tight_layout()
+    plt.savefig("pd_plot.png")
+    
+    if show_img:
+        plt.show()
+    plt.clf()
+
+
+def plot_pwm(speed_pwms, turn_pwms, error, show_img=False):
+    # Plot the PWM
+    fig, ax1 = plt.subplots()
+    t_ax = np.arange(len(speed_pwms))
+    ax1.plot(t_ax, speed_pwms, '-', label="Speed PWM")
+    ax1.plot(t_ax, turn_pwms, '-', label="Steering PWM")
+    ax2 = ax1.twinx()
+    ax2.plot(t_ax, error, '--r', label="Error")
+    
+    ax1.set_xlabel("Frames")
+    ax1.set_ylabel("PWM Values")
+    ax2.set_ylabel("Error Value")
+    
+    plt.title("PWM Values over time")
+    fig.legend()
+    plt.savefig("pwm_plot.png")
+    
+    if show_img:
+        plt.show()
+    plt.clf()
+
+###############################################################################
+
 # Set up GPIO
 calibrate_esc(speed)
-calibrate_steering(steering)
 
 # Set up video stream
 print("Initializing video stream...")
@@ -252,39 +368,99 @@ video = cv2.VideoCapture(VIDEO_DEVICE_IDX)
 video.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_WIDTH)
 video.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_HEIGHT)
 print("Video stream initialized.")
-time.sleep(1)
+time.sleep(3)   # Allow time for camera window to open
+
+# Start moving slowly
+set_esc(speed, 7.65)
 
 # The loop
 while True:
+    # print("speed_dc: ", speed_dc)
     ret, frame = video.read()
     cv2.imshow("original", frame)
 
-    # Calling the functions
+    # Frame processing for steering
     edges = detect_edges(frame)
     roi = region_of_interest(edges)
     line_segments = detect_line_segments(roi)
     lane_lines = average_slope_intercept(frame,line_segments)
-
     lane_lines_image = display_lines(frame,lane_lines)
-    cv2.imshow("lane_lines",lane_lines_image)
-
     steering_angle = get_steering_angle(frame, lane_lines)
     heading_image = display_heading_line(lane_lines_image,steering_angle)
+    cv2.imshow("heading", heading_image)
 
-    # Read the timestamp from the optical encoder and calculate the time difference
-    time_diff_ns = 0
-    with open(TIMESTAMP_PATH, "r") as f:
-      curr_timestamp = int(f.read())
-      if prev_timestamp == -1:
-        prev_timestamp = curr_timestamp
-      else:
-        time_diff_ns = curr_timestamp - prev_timestamp
-        prev_timestamp = curr_timestamp
-        # print("time_diff: ", time_diff_ns)
 
+    # TODO: Detect stop signs periodically
+    
+
+    # PD controller calculations
+    now = time.time()
+    dt = now - lastTime
+
+    deviation = steering_angle - 90  # deviation from non-turned wheels
+
+    # Error and PD adjustment
+    error = -deviation
+    base_turn = 0.75
+    proportional = kp * error
+    derivative = kd * (error - lastError) / dt
+    
+    # Data for graphing
+    p_vals.append(proportional)
+    d_vals.append(derivative)
+    err_vals.append(error)
+    
+    # Steering adjustments
+    turn_amt = base_turn + proportional + derivative
+
+    # Adjust steering based on calculated turn amount
+    turn_amt_mapped = map_value(
+        turn_amt,
+        in_min=-2.0,       # raw minimum
+        in_max=3.0,        # raw maximum
+        out_min=5.5,       # servo left
+        out_max=9.5        # servo right
+    )
+    set_steering(steering, turn_amt_mapped)
+    # print(f"PD error: {turn_amt}, steering duty cycle: {turn_amt_mapped}")
+
+    # Speed and steering updates for graphs
+    steer_pwm.append(turn_amt)
+    speed_pwm.append(speed_dc)
+
+    # Read encoder data for speed adjustments
+    time_diff_ms = 2
+    with open("/sys/module/gpiod_driver/parameters/elapsed_ms", "r") as r:
+        time_diff_ms = int(r.read())
+
+    if (time_diff_ms != 0):
+        print("time_diff: ", time_diff_ms)
+    
+    # Adjust speed based on encoder feedback
+    time_diff_us = time_diff_ms * 1000
+    if time_diff_ms >= 10:
+        # Accelerate
+        accelerate()
+    elif 1 < time_diff_ms < 10:
+        # Decelerate
+        decelerate()
+        
+    # Update error values for PD control
+    lastError = error
+    lastTime = time.time()
+    
+    # Wait to exit
     key = cv2.waitKey(1)
     if key == ESC_KEY_CODE:
       break
 
+# Cleanup
 video.release()
 cv2.destroyAllWindows()
+reset_esc(speed)
+reset_steering(steering)
+GPIO.cleanup()
+
+# Plot that shit
+plot_pd(p_vals, d_vals, err_vals, True)
+plot_pwm(speed_pwm, steer_pwm, err_vals, True)
