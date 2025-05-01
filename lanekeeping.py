@@ -30,7 +30,7 @@ GPIO.setup(speedPin, GPIO.OUT)
 speed = GPIO.PWM(speedPin, speed_pwm_hz)
 speed.start(speed_dc)
 MAX_SPEED = 7.9
-MIN_SPEED = 7.5
+MIN_SPEED = 7.7
 
 # Steering parameters
 steeringPin = 19
@@ -41,6 +41,7 @@ steering_left_dc = 5.5
 GPIO.setup(steeringPin, GPIO.OUT)
 steering = GPIO.PWM(steeringPin, steering_pwm_hz)
 steering.start(steering_dc)
+lastSteeringAngle = 90
 
 # Video parameters
 ESC_KEY_CODE = 27
@@ -53,9 +54,8 @@ TIMESTAMP_PATH = "/sys/devices/platform/slay_device/speed"
 prev_timestamp = -1
 
 # PD variables
-kp = 0.01
-# kd = kp * 0.1
-kd = 0
+kp = 0.1  #started w 0.01
+kd = kp * 0.05
 lastTime = 0
 lastError = 0
 
@@ -117,7 +117,7 @@ def accelerate():
     global MAX_SPEED
     
     if speed_dc < MAX_SPEED:
-        speed_dc = min(speed_dc + 0.05, MAX_SPEED)  # Enhance speed
+        speed_dc = min(speed_dc + 0.025, MAX_SPEED)  # Enhance speed
         set_esc(speed, speed_dc)
         print(f"Velocity increment: Now at {speed_dc}")
     else:
@@ -135,7 +135,7 @@ def decelerate():
     global MIN_SPEED
 
     if speed_dc > MIN_SPEED:
-        speed_dc = max(speed_dc - 0.05, MIN_SPEED)  # Reduce speed
+        speed_dc = max(speed_dc - 0.025, MIN_SPEED)  # Reduce speed
         set_esc(speed, speed_dc)
         print(f"Velocity decrement: Now at {speed_dc}")
     else:
@@ -146,7 +146,7 @@ def decelerate():
 # Image processing functions ##################################################
 def detect_edges(frame):
     # blue color detection
-    blurred = cv2.GaussianBlur(frame, (5,5), 0)
+    # blurred = cv2.GaussianBlur(frame, (5,5), 0)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # cv2.imshow("HSV",hsv)
     lower_blue = np.array([100,120,50], dtype="uint8")
@@ -156,6 +156,9 @@ def detect_edges(frame):
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5,5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=1)
+
+    #Do GaussianBlur using mask instead of frame
+    blurred = cv2.GaussianBlur(mask, (5,5), 0)
 
     cv2.imshow("mask",mask)
 
@@ -267,31 +270,70 @@ def display_lines(frame, lines, line_color=(0, 255, 0), line_width=6): # line co
     return line_image
 
 
-def get_steering_angle(frame, lane_lines):
+def get_steering_angle_custom(frame, lane_lines):
      height, width, _ = frame.shape
-
+     mid = int(width / 2) #ideal center of frame
+    
      if len(lane_lines) == 2: # if two lane lines are detected
         _, _, left_x2, _ = lane_lines[0][0] # extract left x2 from lane_lines array
         _, _, right_x2, _ = lane_lines[1][0] # extract right x2 from lane_lines array
-        mid = int(width / 2)
-        x_offset = (left_x2 + right_x2) / 2 - mid
+        # mid = int(width / 2)
+        # x_offset = (left_x2 + right_x2) / 2 - mid
+
+        center_x = (left_x2 + right_x2) / 2 #get center between lanes
+        x_offset = mid - center_x #reverse direction to go away from lane
         y_offset = int(height / 2)  
 
      elif len(lane_lines) == 1: # if only one line is detected
         x1, _, x2, _ = lane_lines[0][0]
-        x_offset = x2 - x1
+        # x_offset = x2 - x1
+
+        x_offset = mid - x2
         y_offset = int(height / 2)
 
      elif len(lane_lines) == 0: # if no line is detected
-        x_offset = 0
-        y_offset = int(height / 2)
-
+       # x_offset = 0
+       # y_offset = int(height / 2)
+       return 90 #keep straight
      angle_to_mid_radian = math.atan(x_offset / y_offset)
      angle_to_mid_deg = int(angle_to_mid_radian * 180.0 / math.pi)  
      steering_angle = angle_to_mid_deg + 90 
 
      return steering_angle
 
+def get_steering_angle(frame, lane_lines):
+    height, width, _ = frame.shape
+    
+    if len(lane_lines) == 2:
+        _, _, left_x2, _ = lane_lines[0][0]
+        _, _, right_x2, _ = lane_lines[1][0]
+        mid = int(width / 2)
+        x_offset = (left_x2 + right_x2) / 2 - mid
+        y_offset = int(height / 2)
+    
+    elif len(lane_lines) == 1:
+        x1, _, x2, _ = lane_lines[0][0]
+        x_offset = x2 - x1
+        y_offset = int(height / 2)
+    
+    elif len(lane_lines) == 0:
+        x_offset = 0
+        y_offset = int(height / 2)
+    
+    angle_to_mid_radian = math.atan(x_offset / y_offset)
+    angle_to_mid_deg = int(angle_to_mid_radian * 180.0 / math.pi)
+    steering_angle = angle_to_mid_deg + 90
+    
+    return steering_angle
+
+def get_steering_center(center_x, frame_width):
+    deviation = center_x - (frame_width / 2)
+
+    #turn deviation into steering angle
+    #tune scaling factor based on system's response
+    steering_angle = 90 + (deviation * 0.1)
+
+    return steering_angle
 
 def display_heading_line(frame, steering_angle, line_color=(0, 0, 255), line_width=5):
     heading_image = np.zeros_like(frame)
@@ -371,7 +413,7 @@ print("Video stream initialized.")
 time.sleep(3)   # Allow time for camera window to open
 
 # Start moving slowly
-set_esc(speed, 7.65)
+set_esc(speed, 7.72) #7.65
 
 # The loop
 while True:
@@ -383,6 +425,17 @@ while True:
     edges = detect_edges(frame)
     roi = region_of_interest(edges)
     line_segments = detect_line_segments(roi)
+    '''
+    #5/1/25 Find the center between the lanes instead of tracking one
+    if line_segments is not None and len(line_segments) >= 2:
+        left_lane = min([line[0] for line in line_segments]) #left lane position
+        right_lane = max([line[2] for line in line_segments]) #right lane position
+        center_x = (left_lane + right_lane) / 2 #get center between lanes
+        steering_angle = get_steering_center(center_x, frame.shape[1]) #use frame width
+    else:
+        steering_angle = lastSteeringAngle
+    '''
+    # lastSteeringAngle = steering_angle #save steering angle
     lane_lines = average_slope_intercept(frame,line_segments)
     lane_lines_image = display_lines(frame,lane_lines)
     steering_angle = get_steering_angle(frame, lane_lines)
@@ -401,7 +454,7 @@ while True:
 
     # Error and PD adjustment
     error = -deviation
-    base_turn = 0.75
+    base_turn = 0.0
     proportional = kp * error
     derivative = kd * (error - lastError) / dt
     
@@ -416,13 +469,23 @@ while True:
     # Adjust steering based on calculated turn amount
     turn_amt_mapped = map_value(
         turn_amt,
-        in_min=-2.0,       # raw minimum
-        in_max=3.0,        # raw maximum
-        out_min=5.5,       # servo left
-        out_max=9.5        # servo right
+        in_min=-2.0,        # raw minimum
+        in_max=2.0,         # raw maximum
+        out_min=9,          # servo left
+        out_max=6,          # servo right
     )
     set_steering(steering, turn_amt_mapped)
     # print(f"PD error: {turn_amt}, steering duty cycle: {turn_amt_mapped}")
+
+    # print(f'raw turn amount: {turn_amt}')
+    # if 7.3 < turn_amt < 7.6:
+    #     turn_amt = 7.5
+    # elif turn_amt > 9:
+    #     turn_amt = 9.5
+    # elif turn_amt < 6:
+    #     turn_amt = 6
+    # set_steering(steering, turn_amt)
+    # print(f"Steering duty cycle: {turn_amt}")
 
     # Speed and steering updates for graphs
     steer_pwm.append(turn_amt)
@@ -437,11 +500,10 @@ while True:
         print("time_diff: ", time_diff_ms)
     
     # Adjust speed based on encoder feedback
-    time_diff_us = time_diff_ms * 1000
-    if time_diff_ms >= 10:
+    if time_diff_ms >= 17:
         # Accelerate
         accelerate()
-    elif 1 < time_diff_ms < 10:
+    elif 5 < time_diff_ms < 17:
         # Decelerate
         decelerate()
         
